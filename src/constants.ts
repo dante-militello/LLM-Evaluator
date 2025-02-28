@@ -6,7 +6,8 @@ export const DEFAULT_EVALUATION_PROMPT = `INSTRUCCIONES PARA LA EVALUACIÓN:
 export const OPENAI_MODELS = [
   { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
   { value: 'gpt-4o', label: 'GPT-4o' },
-  { value: 'gpt-4o-mini', label: 'GPT-4o Mini' }
+  { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+  { value: 'gpt-4.5-preview', label: 'GPT-4.5 Preview' }
 ] as const;
 
 export const DEEPSEEK_MODELS = [
@@ -16,6 +17,7 @@ export const DEEPSEEK_MODELS = [
 export const ALL_MODELS = [
   { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo', provider: 'openai' },
   { value: 'gpt-4o', label: 'GPT-4o', provider: 'openai' },
+  { value: 'gpt-4.5-preview', label: 'GPT-4.5 Preview', provider: 'openai' },
   { value: 'deepseek-chat', label: 'Deepseek Chat', provider: 'deepseek' },
   { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet', provider: 'claude' }
 ] as const;

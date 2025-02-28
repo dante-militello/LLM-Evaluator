@@ -75,10 +75,102 @@ Responde en formato JSON con esta estructura:
   "content": "el contenido específico a recordar (si es relevante)"
 }`;
 
+// Función para procesar las respuestas y extraer THINK y RESPONSE
+const processResponse = (response: string) => {
+  // Primero, limpiar cualquier etiqueta incompleta o mal formada
+  const cleanedResponse = response
+    // Eliminar todas las etiquetas RESPONSE y THINK
+    .replace(/<\/?RESPONSE>/g, '')
+    .replace(/<\/?THINK>/g, '');
+
+  // Extraer el primer THINK y RESPONSE encontrados
+  const thinkMatch = response.match(/<THINK>([\s\S]*?)<\/THINK>/);
+  const responseMatch = response.match(/<RESPONSE>([\s\S]*?)<\/RESPONSE>/);
+  
+  // Si no hay etiquetas, devolver el texto original limpio como respuesta
+  if (!thinkMatch && !responseMatch) {
+    return {
+      think: null,
+      response: cleanedResponse.trim()
+    };
+  }
+  
+  // Extraer el contenido de las etiquetas
+  const thinkContent = thinkMatch ? thinkMatch[1].trim() : null;
+  const responseContent = responseMatch ? responseMatch[1].trim() : null;
+  
+  // Si hay ambas etiquetas, usar sus contenidos
+  if (thinkContent && responseContent) {
+    return {
+      think: thinkContent,
+      response: responseContent
+    };
+  }
+  
+  // Si solo hay una etiqueta THINK, usar el resto como respuesta
+  if (thinkContent && !responseContent) {
+    // Eliminar la parte de THINK del texto original para obtener la respuesta
+    const remainingText = response.replace(/<THINK>[\s\S]*?<\/THINK>/g, '').trim();
+    // Eliminar cualquier etiqueta RESPONSE que pueda estar en el texto restante
+    const cleanedText = remainingText.replace(/<\/?RESPONSE>/g, '').trim();
+    return {
+      think: thinkContent,
+      response: cleanedText || cleanedResponse.trim()
+    };
+  }
+  
+  // Si solo hay una etiqueta RESPONSE, usar el resto como think
+  if (!thinkContent && responseContent) {
+    // Eliminar la parte de RESPONSE del texto original para obtener el think
+    const remainingText = response.replace(/<RESPONSE>[\s\S]*?<\/RESPONSE>/g, '').trim();
+    // Eliminar cualquier etiqueta THINK que pueda estar en el texto restante
+    const cleanedText = remainingText.replace(/<\/?THINK>/g, '').trim();
+    return {
+      think: cleanedText || null,
+      response: responseContent
+    };
+  }
+  
+  // Caso por defecto (no debería llegar aquí)
+  return {
+    think: thinkContent,
+    response: responseContent || cleanedResponse.trim()
+  };
+};
+
+// Componente para mostrar una respuesta procesada
+const FormattedResponse = ({ content, showThinks }: { content: string, showThinks: boolean }) => {
+  const processed = processResponse(content);
+  
+  if (!processed.think) {
+    // Asegurarse de que no haya etiquetas en el texto
+    const cleanedContent = content.replace(/<\/?(?:THINK|RESPONSE)>/g, '').trim();
+    return <p className="text-sm text-gray-200">{cleanedContent}</p>;
+  }
+  
+  return (
+    <div className="space-y-3">
+      {processed.think && showThinks && (
+        <div className="bg-gray-800/70 p-3 rounded-md border-l-2 border-yellow-500">
+          <h4 className="text-xs font-medium text-yellow-400 mb-1">THINK</h4>
+          <p className="text-sm text-gray-300">{processed.think}</p>
+        </div>
+      )}
+      {processed.response && (
+        <div className={`${showThinks ? "bg-gray-700 p-3 rounded-md border-l-2 border-blue-500" : ""}`}>
+          {showThinks && <h4 className="text-xs font-medium text-blue-400 mb-1">RESPONSE</h4>}
+          <p className="text-sm text-gray-200">{processed.response}</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export function SplitTest() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setLocalError] = useState<string | null>(null);
+  const [showThinks, setShowThinks] = useState(true);
   const [messageStates, setMessageStates] = useState<{
     [messageId: string]: {
       selectedResponse: "A" | "B" | null;
@@ -173,13 +265,15 @@ export function SplitTest() {
   const makeModelRequest = async (
     message: string,
     systemPrompt: string,
-    modelConfig: ModelConfig
+    modelConfig: ModelConfig,
+    isRecipeA: boolean
   ) => {
     const endpoint = `http://localhost:3000/api/chat/${modelConfig.provider}`;
     console.log('=== Iniciando solicitud al servidor ===');
     console.log('Endpoint:', endpoint);
     console.log('Provider:', modelConfig.provider);
     console.log('Model:', modelConfig.model);
+    console.log('Recipe:', isRecipeA ? 'A' : 'B');
 
     // Obtener los últimos 15 mensajes para contexto
     const previousMessages = currentSplitTest?.messages.slice(-15).flatMap(msg => [
@@ -189,11 +283,11 @@ export function SplitTest() {
       },
       {
         role: 'assistant',
-        content: msg.recipeA.response
+        content: isRecipeA ? msg.recipeA.response : msg.recipeB.response
       }
     ]);
 
-    console.log('=== Mensajes Anteriores ===');
+    console.log(`=== Mensajes Anteriores para Recipe ${isRecipeA ? 'A' : 'B'} ===`);
     console.log('Cantidad de mensajes:', previousMessages?.length || 0);
     console.log('Mensajes:', JSON.stringify(previousMessages, null, 2));
 
@@ -330,22 +424,6 @@ export function SplitTest() {
       const modelConfig = getModelConfig(settings.selectedModel);
       console.log('Model Config:', modelConfig);
 
-      // Obtener los últimos 15 mensajes para contexto
-      const previousMessages = currentSplitTest.messages.slice(-15).flatMap(msg => [
-        {
-          role: 'user',
-          content: msg.userMessage
-        },
-        {
-          role: 'assistant',
-          content: msg.recipeA.response
-        }
-      ]);
-
-      console.log('=== Previous Messages ===');
-      console.log('Count:', previousMessages.length);
-      console.log('Messages:', JSON.stringify(previousMessages, null, 2));
-
       // Agregar el contexto de memoria a los prompts
       const memoryContext =
         currentSplitTest?.memory?.entries
@@ -372,8 +450,8 @@ export function SplitTest() {
       // Realizar ambas llamadas en paralelo
       console.log('=== Making API Calls ===');
       const [dataA, dataB] = await Promise.all([
-        makeModelRequest(input, systemPromptWithMemoryA, modelConfig),
-        makeModelRequest(input, systemPromptWithMemoryB, modelConfig),
+        makeModelRequest(input, systemPromptWithMemoryA, modelConfig, true),
+        makeModelRequest(input, systemPromptWithMemoryB, modelConfig, false),
       ]);
 
       console.log('=== API Responses ===');
@@ -539,6 +617,210 @@ export function SplitTest() {
     setMessageStates({}); // Limpiar todos los estados de mensajes
   };
 
+  // Función para exportar el chat como texto (markup)
+  const exportChatAsMarkup = () => {
+    if (!currentSplitTest || !messages.length) return;
+
+    // Crear un elemento modal para mostrar la tabla HTML
+    const modalOverlay = document.createElement('div');
+    modalOverlay.style.position = 'fixed';
+    modalOverlay.style.top = '0';
+    modalOverlay.style.left = '0';
+    modalOverlay.style.width = '100%';
+    modalOverlay.style.height = '100%';
+    modalOverlay.style.backgroundColor = 'rgba(0, 0, 0, 0.8)';
+    modalOverlay.style.display = 'flex';
+    modalOverlay.style.justifyContent = 'center';
+    modalOverlay.style.alignItems = 'center';
+    modalOverlay.style.zIndex = '9999';
+    
+    // Crear el contenedor del modal
+    const modalContent = document.createElement('div');
+    modalContent.style.backgroundColor = '#1f2937';
+    modalContent.style.borderRadius = '8px';
+    modalContent.style.padding = '20px';
+    modalContent.style.width = '90%';
+    modalContent.style.maxWidth = '1200px';
+    modalContent.style.maxHeight = '90vh';
+    modalContent.style.overflowY = 'auto';
+    modalContent.style.position = 'relative';
+    modalContent.style.boxShadow = '0 4px 6px rgba(0, 0, 0, 0.1)';
+    
+    // Crear el botón de cerrar
+    const closeButton = document.createElement('button');
+    closeButton.innerHTML = '&times;';
+    closeButton.style.position = 'absolute';
+    closeButton.style.top = '10px';
+    closeButton.style.right = '10px';
+    closeButton.style.backgroundColor = 'transparent';
+    closeButton.style.border = 'none';
+    closeButton.style.color = '#9ca3af';
+    closeButton.style.fontSize = '24px';
+    closeButton.style.cursor = 'pointer';
+    closeButton.onclick = () => document.body.removeChild(modalOverlay);
+    
+    // Crear el título
+    const title = document.createElement('h2');
+    title.textContent = `Split Test: ${currentSplitTest.recipeA.title} vs ${currentSplitTest.recipeB.title}`;
+    title.style.color = '#e5e7eb';
+    title.style.marginBottom = '16px';
+    title.style.fontSize = '18px';
+    
+    // Crear la fecha
+    const date = document.createElement('p');
+    date.textContent = `Fecha: ${new Date().toLocaleDateString()}`;
+    date.style.color = '#9ca3af';
+    date.style.marginBottom = '20px';
+    date.style.fontSize = '14px';
+    
+    // Crear instrucciones
+    const instructions = document.createElement('div');
+    instructions.style.backgroundColor = '#374151';
+    instructions.style.padding = '12px';
+    instructions.style.borderRadius = '6px';
+    instructions.style.marginBottom = '20px';
+    instructions.style.fontSize = '14px';
+    instructions.style.color = '#e5e7eb';
+    instructions.innerHTML = '<strong>Instrucciones:</strong> Selecciona toda la tabla (Ctrl+A) y cópiala (Ctrl+C). Luego pégala en Google Docs u otro editor que soporte tablas.';
+    
+    // Crear la tabla
+    const table = document.createElement('table');
+    table.style.width = '100%';
+    table.style.borderCollapse = 'collapse';
+    table.style.border = '1px solid #000000';
+    table.style.fontSize = '14px';
+    
+    // Crear encabezado de la tabla
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    
+    // Estilos para las celdas de encabezado - FONDO NEGRO Y LETRAS BLANCAS
+    const headerCellStyle = 'background-color: #000000; color: #ffffff; padding: 10px; text-align: center; font-weight: bold; border: 1px solid #000000;';
+    
+    // Crear celdas de encabezado con formato A - B
+    const headerCellA = document.createElement('th');
+    headerCellA.textContent = `Respuesta A (${currentSplitTest.recipeA.title})`;
+    headerCellA.style.cssText = headerCellStyle;
+    headerCellA.style.width = '50%';
+    
+    const headerCellB = document.createElement('th');
+    headerCellB.textContent = `Respuesta B (${currentSplitTest.recipeB.title})`;
+    headerCellB.style.cssText = headerCellStyle;
+    headerCellB.style.width = '50%';
+    
+    headerRow.appendChild(headerCellA);
+    headerRow.appendChild(headerCellB);
+    
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+    
+    // Crear cuerpo de la tabla
+    const tbody = document.createElement('tbody');
+    
+    // Estilos para las celdas normales - FONDO BLANCO Y LETRAS NEGRAS
+    const cellStyle = 'background-color: #ffffff; color: #000000; padding: 10px; border: 1px solid #000000; vertical-align: top;';
+    const userMessageStyle = 'background-color: #f0f0f0; color: #000000; padding: 10px; border: 1px solid #000000; font-weight: bold; text-align: center;';
+    
+    // Agregar filas con datos
+    messages.forEach((message) => {
+      // Fila para el mensaje del usuario (abarca ambas columnas)
+      const userMessageRow = document.createElement('tr');
+      const userMessageCell = document.createElement('td');
+      userMessageCell.textContent = message.userMessage;
+      userMessageCell.style.cssText = userMessageStyle;
+      userMessageCell.colSpan = 2; // Abarca ambas columnas
+      userMessageRow.appendChild(userMessageCell);
+      tbody.appendChild(userMessageRow);
+      
+      // Fila para las respuestas A y B
+      const responsesRow = document.createElement('tr');
+      
+      // Celda para la respuesta A
+      const responseACell = document.createElement('td');
+      responseACell.style.cssText = cellStyle;
+      
+      const processedA = processResponse(message.recipeA.response);
+      let responseAContent = '';
+      
+      if (processedA.think && showThinks) {
+        responseAContent += `<div style="margin-bottom: 8px;"><strong style="color: #8B6914;">THINK:</strong><div style="margin-top: 4px;">${processedA.think}</div></div>`;
+      }
+      
+      if (processedA.response) {
+        if (showThinks) {
+          responseAContent += `<div><strong style="color: #0000FF;">RESPONSE:</strong><div style="margin-top: 4px;">${processedA.response}</div></div>`;
+        } else {
+          responseAContent += processedA.response;
+        }
+      }
+      
+      responseACell.innerHTML = responseAContent;
+      responsesRow.appendChild(responseACell);
+      
+      // Celda para la respuesta B
+      const responseBCell = document.createElement('td');
+      responseBCell.style.cssText = cellStyle;
+      
+      const processedB = processResponse(message.recipeB.response);
+      let responseBContent = '';
+      
+      if (processedB.think && showThinks) {
+        responseBContent += `<div style="margin-bottom: 8px;"><strong style="color: #8B6914;">THINK:</strong><div style="margin-top: 4px;">${processedB.think}</div></div>`;
+      }
+      
+      if (processedB.response) {
+        if (showThinks) {
+          responseBContent += `<div><strong style="color: #0000FF;">RESPONSE:</strong><div style="margin-top: 4px;">${processedB.response}</div></div>`;
+        } else {
+          responseBContent += processedB.response;
+        }
+      }
+      
+      responseBCell.innerHTML = responseBContent;
+      responsesRow.appendChild(responseBCell);
+      
+      tbody.appendChild(responsesRow);
+      
+      // Agregar una fila vacía como separador entre mensajes
+      const separatorRow = document.createElement('tr');
+      const separatorCell = document.createElement('td');
+      separatorCell.colSpan = 2;
+      separatorCell.style.height = '20px';
+      separatorCell.style.borderLeft = '1px solid #000000';
+      separatorCell.style.borderRight = '1px solid #000000';
+      separatorRow.appendChild(separatorCell);
+      tbody.appendChild(separatorRow);
+    });
+    
+    // Eliminar el último separador
+    if (tbody.lastChild && tbody.childNodes.length > 1) {
+      tbody.removeChild(tbody.lastChild);
+    }
+    
+    table.appendChild(tbody);
+    
+    // Agregar elementos al modal
+    modalContent.appendChild(closeButton);
+    modalContent.appendChild(title);
+    modalContent.appendChild(date);
+    modalContent.appendChild(instructions);
+    modalContent.appendChild(table);
+    
+    // Agregar el modal al DOM
+    modalOverlay.appendChild(modalContent);
+    document.body.appendChild(modalOverlay);
+    
+    // Seleccionar automáticamente la tabla para facilitar la copia
+    const range = document.createRange();
+    range.selectNode(table);
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  };
+
+  // Función para exportar el chat como imagen
   const exportChatAsImage = () => {
     if (!currentSplitTest || !messages.length) return;
 
@@ -606,11 +888,59 @@ export function SplitTest() {
       responseATitle.innerHTML = `<strong>Respuesta A</strong><br><small>Recipe: ${currentSplitTest.recipeA.title}</small>`;
       responseADiv.appendChild(responseATitle);
 
-      const responseAContent = document.createElement('div');
-      responseAContent.style.whiteSpace = 'pre-wrap';
-      responseAContent.style.fontSize = '14px';
-      responseAContent.textContent = message.recipeA.response;
-      responseADiv.appendChild(responseAContent);
+      // Procesar la respuesta A para THINK y RESPONSE
+      const processedA = processResponse(message.recipeA.response);
+      
+      if (processedA.think && showThinks) {
+        const thinkDiv = document.createElement('div');
+        thinkDiv.style.backgroundColor = '#1f2937';
+        thinkDiv.style.padding = '8px';
+        thinkDiv.style.borderRadius = '6px';
+        thinkDiv.style.marginBottom = '8px';
+        thinkDiv.style.borderLeft = '2px solid #eab308';
+        
+        const thinkTitle = document.createElement('div');
+        thinkTitle.style.fontSize = '11px';
+        thinkTitle.style.fontWeight = 'bold';
+        thinkTitle.style.color = '#eab308';
+        thinkTitle.style.marginBottom = '4px';
+        thinkTitle.textContent = 'THINK';
+        thinkDiv.appendChild(thinkTitle);
+        
+        const thinkContent = document.createElement('div');
+        thinkContent.style.whiteSpace = 'pre-wrap';
+        thinkContent.style.fontSize = '13px';
+        thinkContent.textContent = processedA.think;
+        thinkDiv.appendChild(thinkContent);
+        
+        responseADiv.appendChild(thinkDiv);
+      }
+      
+      if (processedA.response) {
+        const responseDiv = document.createElement('div');
+        responseDiv.style.backgroundColor = processedA.think && showThinks ? '#374151' : 'transparent';
+        responseDiv.style.padding = processedA.think && showThinks ? '8px' : '0';
+        responseDiv.style.borderRadius = '6px';
+        responseDiv.style.borderLeft = processedA.think && showThinks ? '2px solid #3b82f6' : 'none';
+        
+        if (processedA.think && showThinks) {
+          const responseTitle = document.createElement('div');
+          responseTitle.style.fontSize = '11px';
+          responseTitle.style.fontWeight = 'bold';
+          responseTitle.style.color = '#3b82f6';
+          responseTitle.style.marginBottom = '4px';
+          responseTitle.textContent = 'RESPONSE';
+          responseDiv.appendChild(responseTitle);
+        }
+        
+        const responseContent = document.createElement('div');
+        responseContent.style.whiteSpace = 'pre-wrap';
+        responseContent.style.fontSize = '13px';
+        responseContent.textContent = processedA.response;
+        responseDiv.appendChild(responseContent);
+        
+        responseADiv.appendChild(responseDiv);
+      }
 
       // Respuesta B
       const responseBDiv = document.createElement('div');
@@ -630,11 +960,59 @@ export function SplitTest() {
       responseBTitle.innerHTML = `<strong>Respuesta B</strong><br><small>Recipe: ${currentSplitTest.recipeB.title}</small>`;
       responseBDiv.appendChild(responseBTitle);
 
-      const responseBContent = document.createElement('div');
-      responseBContent.style.whiteSpace = 'pre-wrap';
-      responseBContent.style.fontSize = '14px';
-      responseBContent.textContent = message.recipeB.response;
-      responseBDiv.appendChild(responseBContent);
+      // Procesar la respuesta B para THINK y RESPONSE
+      const processedB = processResponse(message.recipeB.response);
+      
+      if (processedB.think && showThinks) {
+        const thinkDiv = document.createElement('div');
+        thinkDiv.style.backgroundColor = '#1f2937';
+        thinkDiv.style.padding = '8px';
+        thinkDiv.style.borderRadius = '6px';
+        thinkDiv.style.marginBottom = '8px';
+        thinkDiv.style.borderLeft = '2px solid #eab308';
+        
+        const thinkTitle = document.createElement('div');
+        thinkTitle.style.fontSize = '11px';
+        thinkTitle.style.fontWeight = 'bold';
+        thinkTitle.style.color = '#eab308';
+        thinkTitle.style.marginBottom = '4px';
+        thinkTitle.textContent = 'THINK';
+        thinkDiv.appendChild(thinkTitle);
+        
+        const thinkContent = document.createElement('div');
+        thinkContent.style.whiteSpace = 'pre-wrap';
+        thinkContent.style.fontSize = '13px';
+        thinkContent.textContent = processedB.think;
+        thinkDiv.appendChild(thinkContent);
+        
+        responseBDiv.appendChild(thinkDiv);
+      }
+      
+      if (processedB.response) {
+        const responseDiv = document.createElement('div');
+        responseDiv.style.backgroundColor = processedB.think && showThinks ? '#374151' : 'transparent';
+        responseDiv.style.padding = processedB.think && showThinks ? '8px' : '0';
+        responseDiv.style.borderRadius = '6px';
+        responseDiv.style.borderLeft = processedB.think && showThinks ? '2px solid #3b82f6' : 'none';
+        
+        if (processedB.think && showThinks) {
+          const responseTitle = document.createElement('div');
+          responseTitle.style.fontSize = '11px';
+          responseTitle.style.fontWeight = 'bold';
+          responseTitle.style.color = '#3b82f6';
+          responseTitle.style.marginBottom = '4px';
+          responseTitle.textContent = 'RESPONSE';
+          responseDiv.appendChild(responseTitle);
+        }
+        
+        const responseContent = document.createElement('div');
+        responseContent.style.whiteSpace = 'pre-wrap';
+        responseContent.style.fontSize = '13px';
+        responseContent.textContent = processedB.response;
+        responseDiv.appendChild(responseContent);
+        
+        responseBDiv.appendChild(responseDiv);
+      }
 
       responsesDiv.appendChild(responseADiv);
       responsesDiv.appendChild(responseBDiv);
@@ -680,6 +1058,28 @@ export function SplitTest() {
       document.body.removeChild(container);
     });
   };
+
+  // Mostrar menú de exportación
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+  
+  const handleExportClick = () => {
+    setShowExportMenu(!showExportMenu);
+  };
+
+  // Efecto para cerrar el menú cuando se hace clic fuera de él
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(event.target as Node)) {
+        setShowExportMenu(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   return (
     <div className="h-full flex flex-col p-4 space-y-4">
@@ -740,6 +1140,21 @@ export function SplitTest() {
         </div>
 
         <div className="flex items-center gap-4">
+          {/* Checkbox para mostrar/ocultar THINKS */}
+          <div className="flex items-center gap-2 px-4 py-2 bg-gray-700/50 border border-gray-600 rounded-md">
+            <input
+              type="checkbox"
+              id="showThinks"
+              checked={showThinks}
+              onChange={(e) => setShowThinks(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="showThinks" className="flex items-center gap-1 text-sm text-gray-300 cursor-pointer">
+              <Brain className="w-4 h-4 text-yellow-400" />
+              Mostrar THINKS
+            </label>
+          </div>
+
           <select
             className="w-48 px-4 py-2 bg-gray-700/50 border border-gray-600 rounded-md 
                      text-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -804,16 +1219,65 @@ export function SplitTest() {
             Finalizar Test
           </button>
 
-          <button
-            onClick={exportChatAsImage}
-            disabled={!currentSplitTest || !messages.length}
-            className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-500 
-                     transition-colors duration-200 disabled:opacity-50 
-                     disabled:cursor-not-allowed whitespace-nowrap flex items-center gap-2"
-          >
-            <Download className="w-4 h-4" />
-            Exportar Chat
-          </button>
+          <div className="relative">
+            <button
+              onClick={handleExportClick}
+              disabled={!currentSplitTest || !messages.length}
+              className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-500 
+                       transition-colors duration-200 disabled:opacity-50 
+                       disabled:cursor-not-allowed whitespace-nowrap flex items-center gap-2"
+            >
+              <Download className="w-4 h-4" />
+              Exportar Chat
+            </button>
+            
+            {showExportMenu && (
+              <div ref={exportMenuRef} className="absolute right-0 mt-2 w-56 bg-gray-800 rounded-md shadow-lg z-10 border border-gray-700 overflow-hidden">
+                <div className="bg-gray-700 px-4 py-2 text-sm font-medium text-gray-200 border-b border-gray-600">
+                  Opciones de exportación
+                </div>
+                <ul className="py-1">
+                  <li>
+                    <button 
+                      onClick={() => {
+                        exportChatAsImage();
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full text-left px-4 py-3 text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2 transition-colors"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                        <circle cx="8.5" cy="8.5" r="1.5" />
+                        <polyline points="21 15 16 10 5 21" />
+                      </svg>
+                      <div>
+                        <div>Exportar como imagen</div>
+                        <div className="text-xs text-gray-400">Descarga una imagen PNG</div>
+                      </div>
+                    </button>
+                  </li>
+                  <li>
+                    <button 
+                      onClick={() => {
+                        exportChatAsMarkup();
+                        setShowExportMenu(false);
+                      }}
+                      className="w-full text-left px-4 py-3 text-sm text-gray-200 hover:bg-gray-700 flex items-center gap-2 transition-colors"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" />
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                      </svg>
+                      <div>
+                        <div>Exportar como texto</div>
+                        <div className="text-xs text-gray-400">Copia al portapapeles</div>
+                      </div>
+                    </button>
+                  </li>
+                </ul>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -882,9 +1346,7 @@ export function SplitTest() {
                         </div>
                       )}
                     </div>
-                    <p className="text-sm text-gray-200">
-                      {message.recipeA.response}
-                    </p>
+                    <FormattedResponse content={message.recipeA.response} showThinks={showThinks} />
                   </div>
                 </div>
 
@@ -933,9 +1395,7 @@ export function SplitTest() {
                         </div>
                       )}
                     </div>
-                    <p className="text-sm text-gray-200">
-                      {message.recipeB.response}
-                    </p>
+                    <FormattedResponse content={message.recipeB.response} showThinks={showThinks} />
                   </div>
                 </div>
               </div>
@@ -1146,7 +1606,7 @@ export function SplitTest() {
                                           </pre>
                                         </div>
                                       )}
-                                      <p className="text-gray-400 text-sm mt-1">
+                                      <p className="text-gray-400 mt-1">
                                         {specificChange.explanation}
                                       </p>
                                     </div>
